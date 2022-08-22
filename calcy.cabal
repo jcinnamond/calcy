@@ -1,0 +1,66 @@
+cabal-version:      2.4
+name:               calcy
+version:            0.1.0.0
+
+-- A short (one-line) description of the package.
+-- synopsis:
+
+-- A longer description of the package.
+-- description:
+
+-- A URL where users can report bugs.
+-- bug-reports:
+
+license:            BSD-3-Clause
+license-file:       LICENSE
+author:             John Cinnamond
+maintainer:         john@cinnamond.me.uk
+
+-- A copyright notice.
+-- copyright:
+-- category:
+extra-source-files: CHANGELOG.md
+
+common shared-properties
+    build-depends:    base >= 4.14 && < 4.17
+                    , relude ^>= 1.1.0.0
+                    , hspec
+                    , hspec-megaparsec
+                    , megaparsec
+
+    mixins:           base hiding (Prelude)
+                    , relude (Relude as Prelude)
+                    , relude
+    default-language: Haskell2010
+    ghc-options:      -Wall -Werror -Wno-unused-imports
+    default-extensions: OverloadedStrings
+
+library
+    import:           shared-properties
+    hs-source-dirs:   src
+    build-depends:    megaparsec
+    exposed-modules:  Parser
+                    , Tokens
+                    , Shunt
+                    , Calc
+                    , VM
+    build-depends:    containers
+                    , vector
+                    , parser-combinators
+
+executable calcy-exe
+    import:           shared-properties
+    main-is:          Main.hs
+    hs-source-dirs:   app
+
+test-suite calcy-test
+    import:             shared-properties
+    type:               exitcode-stdio-1.0
+    hs-source-dirs:     test
+    main-is:            Spec.hs
+    build-tool-depends: hspec-discover:hspec-discover == 2.*
+    build-depends:      calcy
+    other-modules:      ParserSpec
+                      , ShuntSpec
+                      , CalcySpec
+                      , VMSpec
