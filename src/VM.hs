@@ -1,27 +1,44 @@
 {-# LANGUAGE NamedFieldPuns #-}
 
-module VM (run, runTrace, halt, push, call, ret, add, sub, mult) where
+module VM
+  ( run,
+    runTrace,
+    halt,
+    push,
+    call,
+    ret,
+    add,
+    sub,
+    mult,
+    nonsense,
+    initialCPU,
+    CPU (..),
+  )
+where
 
+import Control.Monad.Except (MonadError (catchError, throwError))
 import Data.Vector.Unboxed (Vector, (!))
 import GHC.Base (until)
 import Relude.Unsafe (head, tail)
+import qualified Stack as S
 import Tokens (CalcToken)
+import VMErrors (VMError (UnexpectedInstruction, UnrecognisedInstruction))
 import Prelude hiding (head, tail)
 
 data CPU = CPU
   { cpuIP :: Int,
     cpuSP :: Int,
-    cpuStack :: [Int],
-    cpuStackLength :: Int,
-    cpuError :: Maybe String,
+    cpuStack :: S.Stack,
+    cpuError :: Maybe VMError,
     cpuHalted :: Bool
   }
+  deriving (Show)
 
 type Program = (Vector Word8)
 
 type Instruction = Word8
 
-halt, push, call, ret, add, sub, mult :: Instruction
+halt, push, call, ret, add, sub, mult, nonsense :: Instruction
 halt = 0x00
 push = 0x01
 call = 0x02
@@ -29,33 +46,16 @@ ret = 0x03
 add = 0x04
 sub = 0x05
 mult = 0x06
+nonsense = 0xff
 
 -- trace = 0xff
-
-stackPush :: CPU -> Int -> CPU
-stackPush cpu@CPU {cpuStack, cpuStackLength} x =
-  cpu
-    { cpuStack = x : cpuStack,
-      cpuStackLength = succ cpuStackLength
-    }
-
-stackPop :: CPU -> (Int, CPU)
-stackPop cpu@CPU {cpuStack, cpuStackLength} = (v, cpu')
-  where
-    v = head cpuStack
-    cpu' =
-      cpu
-        { cpuStack = tail cpuStack,
-          cpuStackLength = pred cpuStackLength
-        }
 
 initialCPU :: CPU
 initialCPU =
   CPU
     { cpuIP = 0,
       cpuSP = 0,
-      cpuStack = [],
-      cpuStackLength = 0,
+      cpuStack = S.emptyStack,
       cpuError = Nothing,
       cpuHalted = False
     }
@@ -76,21 +76,26 @@ runTrace p = go initialCPU
     prettyPrint CPU {cpuStack, cpuIP, cpuSP} =
       print cpuStack >> print cpuSP >> print cpuIP >> putStrLn ""
 
-    result CPU {cpuError = Just err} = err
-    result CPU {cpuStack = []} = "unexpected empty stack"
-    result CPU {cpuStack = (x : _)} = show x
+    result CPU {cpuError = Just err} = show err
+    result CPU {cpuStack = s} = show $ S.pop s
 
 run :: Program -> String
 run p = result finalCPU
   where
     finalCPU = until (cpuHalted) (step p) initialCPU
-    result CPU {cpuError = Just err} = err
-    result CPU {cpuStack = []} = "unexpected empty stack"
-    result CPU {cpuStack = (x : _)} = show x
+    result CPU {cpuError = Just err} = show err
+    result CPU {cpuStack = s} = stackTop
+      where
+        stackTop = case S.pop s of
+          Left err -> show err
+          Right (v, _) -> show v
 
 step :: Program -> CPU -> CPU
 step _ cpu@CPU {cpuError = Just _} = cpu
-step p cpu@CPU {cpuIP} = go
+step p cpu@CPU {cpuIP} =
+  case go of
+    Left err -> cpu {cpuHalted = True, cpuError = Just err}
+    Right c -> c
   where
     instruction = p ! cpuIP
     go
@@ -101,41 +106,50 @@ step p cpu@CPU {cpuIP} = go
       | instruction == add = stepOp (+) cpu
       | instruction == sub = stepOp (-) cpu
       | instruction == mult = stepOp (*) cpu
-      | otherwise = cpu {cpuError = Just "unexpected instruction"}
+      | otherwise = throwError $ UnrecognisedInstruction instruction
 
-stepHalt :: CPU -> CPU
-stepHalt cpu = cpu {cpuHalted = True}
+stepHalt :: CPU -> Either VMError CPU
+stepHalt cpu = Right cpu {cpuHalted = True}
 
-stepPush :: Program -> CPU -> CPU
-stepPush p cpu@CPU {cpuIP} =
-  (stackPush cpu (fromIntegral v)) {cpuIP = cpuIP + 2}
+stepPush :: Program -> CPU -> Either VMError CPU
+stepPush p cpu@CPU {cpuIP, cpuStack} =
+  pure
+    cpu
+      { cpuIP = cpuIP + 2,
+        cpuStack = S.push v cpuStack
+      }
   where
-    v = p ! (cpuIP + 1)
+    v = fromIntegral $ p ! (cpuIP + 1)
 
-stepCall :: Program -> CPU -> CPU
-stepCall p cpu@CPU {cpuIP, cpuStackLength} = cpu' {cpuIP = callAddr, cpuSP = newSP}
+stepCall :: Program -> CPU -> Either VMError CPU
+stepCall p cpu@CPU {cpuIP, cpuStack} =
+  Right
+    cpu
+      { cpuIP = callAddr,
+        cpuSP = newSP,
+        cpuStack = newStack
+      }
   where
-    cpu' = stackPush cpu (cpuIP + 2)
     callAddr = fromIntegral $ p ! (cpuIP + 1)
-    newSP = cpuStackLength
+    newSP = S.position newStack
+    retAddr = cpuIP + 2
+    newStack = S.push retAddr cpuStack
 
-stepRet :: CPU -> CPU
-stepRet cpu@CPU {cpuSP, cpuStack, cpuStackLength} =
-  cpu
-    { cpuIP = retAddr,
-      cpuStack = newStack,
-      cpuHalted = True
-    }
-  where
-    retValue = head cpuStack
-    outerFrame = drop frameSize cpuStack
-    frameSize = cpuStackLength - cpuSP
-    retAddr = head cpuStack
-    newStack = retValue : tail outerFrame
+stepRet :: CPU -> Either VMError CPU
+stepRet cpu@CPU {cpuStack, cpuSP} = do
+  (res, s') <- S.pop cpuStack
+  (retAddr, s) <- S.ret cpuSP s'
+  pure
+    cpu
+      { cpuStack = S.push res s,
+        cpuIP = retAddr
+      }
 
-stepOp :: (Int -> Int -> Int) -> CPU -> CPU
-stepOp op cpu@CPU {cpuIP} =
-  let (x, cpu') = stackPop cpu
-   in let (y, cpu'') = stackPop cpu'
-       in let cpu''' = stackPush cpu'' (op y x)
-           in cpu''' {cpuIP = cpuIP + 1}
+stepOp :: (Int -> Int -> Int) -> CPU -> Either VMError CPU
+stepOp op cpu@CPU {cpuIP, cpuStack} = do
+  s <- S.binop op cpuStack
+  pure
+    cpu
+      { cpuIP = cpuIP + 1,
+        cpuStack = s
+      }

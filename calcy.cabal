@@ -44,9 +44,12 @@ library
                     , Shunt
                     , Calc
                     , VM
+                    , VMErrors
+                    , Stack
     build-depends:    containers
                     , vector
                     , parser-combinators
+                    , mtl
 
 executable calcy-exe
     import:           shared-properties
@@ -64,3 +67,4 @@ test-suite calcy-test
                       , ShuntSpec
                       , CalcySpec
                       , VMSpec
+                      , StackSpec
