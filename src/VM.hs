@@ -10,6 +10,7 @@ module VM
     add,
     sub,
     mult,
+    load,
     nonsense,
     initialCPU,
     CPU (..),
@@ -22,7 +23,7 @@ import GHC.Base (until)
 import Relude.Unsafe (head, tail)
 import qualified Stack as S
 import Tokens (CalcToken)
-import VMErrors (VMError (UnexpectedInstruction, UnrecognisedInstruction))
+import VMErrors (VMError (EmptyStack, UnexpectedInstruction, UnrecognisedInstruction))
 import Prelude hiding (head, tail)
 
 data CPU = CPU
@@ -38,7 +39,7 @@ type Program = (Vector Word8)
 
 type Instruction = Word8
 
-halt, push, call, ret, add, sub, mult, nonsense :: Instruction
+halt, push, call, ret, add, sub, mult, load, nonsense :: Instruction
 halt = 0x00
 push = 0x01
 call = 0x02
@@ -46,6 +47,7 @@ ret = 0x03
 add = 0x04
 sub = 0x05
 mult = 0x06
+load = 0x07
 nonsense = 0xff
 
 -- trace = 0xff
@@ -93,36 +95,40 @@ run p = result finalCPU
 step :: Program -> CPU -> CPU
 step _ cpu@CPU {cpuError = Just _} = cpu
 step p cpu@CPU {cpuIP} =
-  case go of
+  case go p cpu of
     Left err -> cpu {cpuHalted = True, cpuError = Just err}
     Right c -> c
   where
     instruction = p ! cpuIP
     go
-      | instruction == halt = stepHalt cpu
-      | instruction == push = stepPush p cpu
-      | instruction == call = stepCall p cpu
-      | instruction == ret = stepRet cpu
-      | instruction == add = stepOp (+) cpu
-      | instruction == sub = stepOp (-) cpu
-      | instruction == mult = stepOp (*) cpu
-      | otherwise = throwError $ UnrecognisedInstruction instruction
+      | instruction == halt = nullary stepHalt
+      | instruction == push = unary stepPush
+      | instruction == call = unary stepCall
+      | instruction == ret = nullary stepRet
+      | instruction == add = nullary $ stepOp (+)
+      | instruction == sub = nullary $ stepOp (-)
+      | instruction == mult = nullary $ stepOp (*)
+      | instruction == load = unary stepLoad
+      | otherwise = (\_ _ -> throwError $ UnrecognisedInstruction instruction)
+
+nullary :: (CPU -> Either VMError CPU) -> Program -> CPU -> Either VMError CPU
+nullary fn _ c@CPU {cpuIP} = fn $ c {cpuIP = cpuIP + 1}
+
+unary :: (Word8 -> CPU -> Either VMError CPU) -> Program -> CPU -> Either VMError CPU
+unary fn p cpu@CPU {cpuIP} = fn v newCpu
+  where
+    v = p ! (cpuIP + 1)
+    newCpu = cpu {cpuIP = cpuIP + 2}
 
 stepHalt :: CPU -> Either VMError CPU
 stepHalt cpu = Right cpu {cpuHalted = True}
 
-stepPush :: Program -> CPU -> Either VMError CPU
-stepPush p cpu@CPU {cpuIP, cpuStack} =
-  pure
-    cpu
-      { cpuIP = cpuIP + 2,
-        cpuStack = S.push v cpuStack
-      }
-  where
-    v = fromIntegral $ p ! (cpuIP + 1)
+stepPush :: Word8 -> CPU -> Either VMError CPU
+stepPush v cpu@CPU {cpuStack} =
+  pure cpu {cpuStack = S.push (fromIntegral v) cpuStack}
 
-stepCall :: Program -> CPU -> Either VMError CPU
-stepCall p cpu@CPU {cpuIP, cpuStack} =
+stepCall :: Word8 -> CPU -> Either VMError CPU
+stepCall v cpu@CPU {cpuIP, cpuStack} =
   Right
     cpu
       { cpuIP = callAddr,
@@ -130,9 +136,9 @@ stepCall p cpu@CPU {cpuIP, cpuStack} =
         cpuStack = newStack
       }
   where
-    callAddr = fromIntegral $ p ! (cpuIP + 1)
+    callAddr = fromIntegral $ v
     newSP = S.position newStack
-    retAddr = cpuIP + 2
+    retAddr = cpuIP
     newStack = S.push retAddr cpuStack
 
 stepRet :: CPU -> Either VMError CPU
@@ -146,10 +152,11 @@ stepRet cpu@CPU {cpuStack, cpuSP} = do
       }
 
 stepOp :: (Int -> Int -> Int) -> CPU -> Either VMError CPU
-stepOp op cpu@CPU {cpuIP, cpuStack} = do
+stepOp op cpu@CPU {cpuStack} = do
   s <- S.binop op cpuStack
-  pure
-    cpu
-      { cpuIP = cpuIP + 1,
-        cpuStack = s
-      }
+  pure cpu {cpuStack = s}
+
+stepLoad :: Word8 -> CPU -> Either VMError CPU
+stepLoad addr cpu@CPU {cpuStack} = do
+  v <- S.load (fromIntegral addr) cpuStack
+  pure cpu {cpuStack = S.push v cpuStack}

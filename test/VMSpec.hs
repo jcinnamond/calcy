@@ -35,3 +35,8 @@ spec = do
     it "multiplies numbers" $ do
       let program = fromList [VM.push, 2, VM.push, 3, VM.mult, VM.halt]
       VM.run program `shouldBe` "6"
+
+  describe "load" $ do
+    it "copies values to the head of the stack" $ do
+      let program = fromList [VM.push, 2, VM.push, 3, VM.push, 4, VM.push, 5, VM.load, 0, VM.load, 2, VM.add, VM.halt]
+      VM.run program `shouldBe` "6"

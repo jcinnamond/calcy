@@ -8,6 +8,7 @@ module Stack
     binop,
     ret,
     position,
+    load,
   )
 where
 
@@ -46,3 +47,10 @@ jump p (Stack s)
   where
     truncatedStack = drop diff s
     diff = length s - p
+
+load :: Int -> Stack -> Either VMError Int
+load addr (Stack s) = case s !!? pos of
+  Just v -> pure v
+  Nothing -> throwError InvalidStackPosition
+  where
+    pos = length s - 1 - addr
