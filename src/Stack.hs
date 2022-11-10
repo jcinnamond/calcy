@@ -1,3 +1,4 @@
+{-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE TupleSections #-}
 
 module Stack
@@ -5,8 +6,9 @@ module Stack
     emptyStack,
     push,
     pop,
+    popN,
     binop,
-    ret,
+    jump,
     position,
     load,
   )
@@ -16,6 +18,10 @@ import Control.Monad.Except (MonadError (throwError))
 import VMErrors (VMError (EmptyStack, InvalidStackPosition, NotEnoughElementsOnStack))
 
 newtype Stack = Stack [Int] deriving (Show, Eq)
+
+instance Semigroup Stack where
+  (<>) :: Stack -> Stack -> Stack
+  (<>) (Stack x) (Stack y) = Stack (x <> y)
 
 emptyStack :: Stack
 emptyStack = Stack []
@@ -30,14 +36,18 @@ pop :: Stack -> Either VMError (Int, Stack)
 pop (Stack []) = throwError EmptyStack
 pop (Stack (x : xs)) = pure (x, Stack xs)
 
+popN :: Int -> Stack -> Either VMError (Stack, Stack)
+popN n (Stack s)
+  | n > length s = throwError NotEnoughElementsOnStack
+  | otherwise = pure (Stack params, Stack s')
+  where
+    (params, s') = splitAt n s
+
 binop :: (Int -> Int -> Int) -> Stack -> Either VMError Stack
 binop op (Stack (x : y : zs)) = Right $ Stack (result : zs)
   where
     result = y `op` x
 binop _ _ = Left NotEnoughElementsOnStack
-
-ret :: Int -> Stack -> Either VMError (Int, Stack)
-ret p s = jump p s >>= pop
 
 jump :: Int -> Stack -> Either VMError Stack
 jump _ (Stack []) = Left EmptyStack

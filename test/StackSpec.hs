@@ -29,14 +29,14 @@ spec = do
     it "returns an error when there are no elements on the stack" $ do
       binop (+) emptyStack `shouldBe` Left NotEnoughElementsOnStack
 
-  describe "ret" $ do
+  describe "jump" $ do
     it "takes the top of the stack, drops the unwanted elements, pushes the return value" $ do
       let stack = mkStack [1, 2, 3, 4, 5, 6]
-      ret 2 stack `shouldBe` Right (2, Stack [1])
+      jump 2 stack `shouldBe` Right (Stack [2, 1])
 
     it "returns an error when the stack is too small" $ do
       let stack = mkStack [1, 2, 3]
-      ret 7 stack `shouldBe` Left InvalidStackPosition
+      jump 7 stack `shouldBe` Left InvalidStackPosition
 
     it "returns an error when the stack is empty" $ do
-      ret 0 emptyStack `shouldBe` Left EmptyStack
+      jump 0 emptyStack `shouldBe` Left EmptyStack

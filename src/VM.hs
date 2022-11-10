@@ -11,6 +11,7 @@ module VM
     sub,
     mult,
     load,
+    param,
     nonsense,
     initialCPU,
     CPU (..),
@@ -39,7 +40,7 @@ type Program = (Vector Word8)
 
 type Instruction = Word8
 
-halt, push, call, ret, add, sub, mult, load, nonsense :: Instruction
+halt, push, call, ret, add, sub, mult, load, param, nonsense :: Instruction
 halt = 0x00
 push = 0x01
 call = 0x02
@@ -48,6 +49,7 @@ add = 0x04
 sub = 0x05
 mult = 0x06
 load = 0x07
+param = 0x08
 nonsense = 0xff
 
 -- trace = 0xff
@@ -76,7 +78,7 @@ runTrace p = go initialCPU
 
     prettyPrint :: CPU -> IO ()
     prettyPrint CPU {cpuStack, cpuIP, cpuSP} =
-      print cpuStack >> print cpuSP >> print cpuIP >> putStrLn ""
+      print cpuStack >> print ("SP: " :: Text) >> print cpuSP >> print ("IP: " :: Text) >> print cpuIP >> putStrLn ""
 
     result CPU {cpuError = Just err} = show err
     result CPU {cpuStack = s} = show $ S.pop s
@@ -101,24 +103,32 @@ step p cpu@CPU {cpuIP} =
   where
     instruction = p ! cpuIP
     go
-      | instruction == halt = nullary stepHalt
-      | instruction == push = unary stepPush
-      | instruction == call = unary stepCall
-      | instruction == ret = nullary stepRet
-      | instruction == add = nullary $ stepOp (+)
-      | instruction == sub = nullary $ stepOp (-)
-      | instruction == mult = nullary $ stepOp (*)
-      | instruction == load = unary stepLoad
-      | otherwise = (\_ _ -> throwError $ UnrecognisedInstruction instruction)
+      | instruction == halt = nullaryOp stepHalt
+      | instruction == push = unaryOp stepPush
+      | instruction == call = binaryOp stepCall
+      | instruction == ret = nullaryOp stepRet
+      | instruction == add = nullaryOp $ stepOp (+)
+      | instruction == sub = nullaryOp $ stepOp (-)
+      | instruction == mult = nullaryOp $ stepOp (*)
+      | instruction == load = unaryOp stepLoad
+      | instruction == param = unaryOp stepParam
+      | otherwise = \_ _ -> throwError $ UnrecognisedInstruction instruction
 
-nullary :: (CPU -> Either VMError CPU) -> Program -> CPU -> Either VMError CPU
-nullary fn _ c@CPU {cpuIP} = fn $ c {cpuIP = cpuIP + 1}
+nullaryOp :: (CPU -> Either VMError CPU) -> Program -> CPU -> Either VMError CPU
+nullaryOp fn _ c@CPU {cpuIP} = fn $ c {cpuIP = cpuIP + 1}
 
-unary :: (Word8 -> CPU -> Either VMError CPU) -> Program -> CPU -> Either VMError CPU
-unary fn p cpu@CPU {cpuIP} = fn v newCpu
+unaryOp :: (Word8 -> CPU -> Either VMError CPU) -> Program -> CPU -> Either VMError CPU
+unaryOp fn p cpu@CPU {cpuIP} = fn v newCpu
   where
     v = p ! (cpuIP + 1)
     newCpu = cpu {cpuIP = cpuIP + 2}
+
+binaryOp :: (Word8 -> Word8 -> CPU -> Either VMError CPU) -> Program -> CPU -> Either VMError CPU
+binaryOp fn p cpu@CPU {cpuIP} = fn v w newCpu
+  where
+    v = p ! (cpuIP + 1)
+    w = p ! (cpuIP + 2)
+    newCpu = cpu {cpuIP = cpuIP + 3}
 
 stepHalt :: CPU -> Either VMError CPU
 stepHalt cpu = Right cpu {cpuHalted = True}
@@ -127,28 +137,30 @@ stepPush :: Word8 -> CPU -> Either VMError CPU
 stepPush v cpu@CPU {cpuStack} =
   pure cpu {cpuStack = S.push (fromIntegral v) cpuStack}
 
-stepCall :: Word8 -> CPU -> Either VMError CPU
-stepCall v cpu@CPU {cpuIP, cpuStack} =
+stepCall :: Word8 -> Word8 -> CPU -> Either VMError CPU
+stepCall numParams callAddr cpu@CPU {cpuIP, cpuStack, cpuSP} = do
+  (params, cpuStack') <- S.popN (fromIntegral numParams) cpuStack
+  let newSP = S.position cpuStack'
+  let retAddr = cpuIP
+  let newStack = params <> S.push retAddr (S.push cpuSP cpuStack')
   Right
     cpu
-      { cpuIP = callAddr,
+      { cpuIP = fromIntegral callAddr,
         cpuSP = newSP,
         cpuStack = newStack
       }
-  where
-    callAddr = fromIntegral $ v
-    newSP = S.position newStack
-    retAddr = cpuIP
-    newStack = S.push retAddr cpuStack
 
 stepRet :: CPU -> Either VMError CPU
 stepRet cpu@CPU {cpuStack, cpuSP} = do
-  (res, s') <- S.pop cpuStack
-  (retAddr, s) <- S.ret cpuSP s'
+  (res, _) <- S.pop cpuStack
+  newSP <- S.load cpuSP cpuStack
+  newIP <- S.load (cpuSP + 1) cpuStack
+  s <- S.jump cpuSP cpuStack
   pure
     cpu
       { cpuStack = S.push res s,
-        cpuIP = retAddr
+        cpuSP = newSP,
+        cpuIP = newIP
       }
 
 stepOp :: (Int -> Int -> Int) -> CPU -> Either VMError CPU
@@ -160,3 +172,10 @@ stepLoad :: Word8 -> CPU -> Either VMError CPU
 stepLoad addr cpu@CPU {cpuStack} = do
   v <- S.load (fromIntegral addr) cpuStack
   pure cpu {cpuStack = S.push v cpuStack}
+
+stepParam :: Word8 -> CPU -> Either VMError CPU
+stepParam addr cpu@CPU {cpuStack, cpuSP} = do
+  v <- S.load a cpuStack
+  pure cpu {cpuStack = S.push v cpuStack}
+  where
+    a = cpuSP + 2 + fromIntegral addr
